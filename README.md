@@ -1,7 +1,8 @@
 A_MCM_A – Smartphone Battery Drain (A) / 手机电量耗竭建模（A）
 
-Changelog / 变更记录
+- Changelog / 变更记录
 - 2026-01-30: 初始正式技术文档模板，包含中英对照、公式区块、字段表、使用示例；CSV 输出字段扩展以包含分量功耗。新增 notebook 路径指引。
+- 2026-01-31: 增添 Notebook HTML 导出的一键脚本方案（Python 脚本 ci_export_notebook_html.py、Shell 脚本 run_and_export.sh、Windows batch run_and_export.bat），方便 CI/CD 自动化导出 HTML。
 
 Overview / 概述
 - English: Lightweight, extensible Python model for MCM A. Physics-based SOC dynamics with component-wise power decomposition and temperature-dependent capacity. Also outlines a data-driven (training-style) parameter fitting approach without neural networks.
@@ -67,8 +68,22 @@ Data & CSV Output / 数据与 CSV 输出
 - CSV header example is provided in the Notebook and code comments.
 
 Notebook & Demo / Notebook & 演示
-- Notebooks path: A_MCM_A/notebooks/battery_csv_demo.ipynb
+ - Notebooks path: A_MCM_A/notebooks/battery_csv_demo.ipynb
+- Path resolution for CSV in Notebook
+- You can override CSV path via environment variable A_MCM_A_CSV_PATH, e.g.:
+  - Windows: set A_MCM_A_CSV_PATH=C:\path\to\trajectory_demo.csv
+  - Linux/macOS: export A_MCM_A_CSV_PATH=/path/to/trajectory_demo.csv
+- Or rely on the internal resolver (battery_csv_path_utils.resolve_csv_path) which looks for the default path A_MCM_A/output/trajectory_demo.csv under your repo, with a safety fallback.
+- If you patch the notebook (option B) using the provided update_notebook_path.py, the path resolver will be used automatically.
 - This notebook demonstrates CSV loading, visualization (SOC, temp, total and component powers) and simple energy metrics.
+- Notebook HTML Export (CI/CD) / Notebook HTML 导出（CI/CD）
+- One-click HTML export options:
+-  - Python: python A_MCM_A/scripts/ci_export_notebook_html.py
+-  - Shell (Linux/macOS): A_MCM_A/scripts/run_and_export.sh
+-  - Windows: A_MCM_A/scripts/run_and_export.bat
+- Prerequisite: nbconvert should be installed in your Python environment.
+- How it works: the script first runs the CSV generator (demo_run.py) to ensure data exists, then executes the notebook and exports to HTML.
+- Quick manual alternative: generate CSV via "python A_MCM_A/demo_run.py" and then run "jupyter nbconvert --to html --execute A_MCM_A/notebooks/battery_csv_demo.ipynb --output A_MCM_A/notebooks/battery_csv_demo.html --ExecutePreprocessor.timeout=600".
 
 API Reference / API 参考
 - BatteryModel constructor parameters (selected):
