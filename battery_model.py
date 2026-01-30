@@ -31,11 +31,13 @@ class BatteryModel:
         k_temp: float = 0.02,  # temperature sensitivity for capacity
         P_base: float = 0.20,  # baseline power (idle) [W]
         P_screen_base: float = 0.30,  # screen power factor baseline [W]
+        P_screen_exp: float = 1.0,  # exponent for screen power (nonlinearity)
         P_cpu_idle: float = 0.10,  # CPU idle power [W]
         P_cpu_peak: float = 0.90,  # CPU peak power at full load [W]
         P_network: float = 0.25,  # network activity power [W]
         P_gps: float = 0.04,  # GPS power [W]
         P_background: float = 0.05,  # background apps power [W]
+        P_cpu_exp: float = 1.0,  # exponent for CPU power curve used in P_CPU
         C_th: float = 600.0,  # thermal capacitance [J/K]
         h: float = 5.0,  # thermal conductance to environment [W/K]
         T_env_init: float = 25.0,  # ambient temp [C]
@@ -52,6 +54,8 @@ class BatteryModel:
         self.P_network = P_network
         self.P_gps = P_gps
         self.P_background = P_background
+        self.P_screen_exp = P_screen_exp
+        self.P_cpu_exp = P_cpu_exp
         self.C_th = C_th
         self.h = h
         self.T_env = float(T_env_init)
@@ -73,20 +77,35 @@ class BatteryModel:
         network = usage.get("network", True)
         gps = usage.get("gps", True)
         background = usage.get("background", True)
-        P = (
-            self.P_base
-            + self.P_screen_base * brightness
-            + (self.P_cpu_idle + (self.P_cpu_peak - self.P_cpu_idle) * cpu_load)
-            + (self.P_network if network else 0.0)
-            + (self.P_gps if gps else 0.0)
-            + (self.P_background if background else 0.0)
+        P_screen = self.P_screen_base * (brightness**self.P_screen_exp)
+        P_CPU = self.P_cpu_idle + (self.P_cpu_peak - self.P_cpu_idle) * (
+            cpu_load**self.P_cpu_exp
         )
+        P_network = self.P_network if network else 0.0
+        P_GPS = self.P_gps if gps else 0.0
+        P_background = self.P_background if background else 0.0
+        P = self.P_base + P_screen + P_CPU + P_network + P_GPS + P_background
+        # store per-component powers for later export
+        self._last_p_components = {
+            "P_screen": P_screen,
+            "P_CPU": P_CPU,
+            "P_network": P_network,
+            "P_GPS": P_GPS,
+            "P_background": P_background,
+        }
         return max(0.0, P)
 
     def step(
         self, dt_s: float, usage: Dict[str, Any], ambient_T: Optional[float] = None
     ) -> Dict[str, float]:
         P = self.compute_power(usage)
+        # pull per-component powers from the last computation
+        comps = getattr(self, "_last_p_components", {})
+        P_screen = comps.get("P_screen", 0.0)
+        P_CPU = comps.get("P_CPU", 0.0)
+        P_network = comps.get("P_network", 0.0)
+        P_GPS = comps.get("P_GPS", 0.0)
+        P_background = comps.get("P_background", 0.0)
         if ambient_T is not None:
             self.T_env = float(ambient_T)
         # Temperature dynamics (first-order)
@@ -97,7 +116,18 @@ class BatteryModel:
         I = P / max(self.V_nom, 1e-6)
         dSOC = -(I * dt_s) / (Q_eff * 3600.0)
         self.SOC = max(0.0, min(1.0, self.SOC + dSOC))
-        return {"SOC": self.SOC, "T": self.T, "P": P, "I": I, "Q_eff": Q_eff}
+        return {
+            "SOC": self.SOC,
+            "T": self.T,
+            "P": P,
+            "I": I,
+            "Q_eff": Q_eff,
+            "P_screen": P_screen,
+            "P_CPU": P_CPU,
+            "P_network": P_network,
+            "P_GPS": P_GPS,
+            "P_background": P_background,
+        }
 
     def _get_usage_at_time(
         self, t: float, schedule: Optional[List[Dict[str, Any]]]
@@ -162,11 +192,16 @@ class BatteryModel:
         gps_seq: List[bool] = []
         background_seq: List[bool] = []
         ambient_seq: List[float] = []
+        P_screen_seq: List[float] = []
+        P_CPU_seq: List[float] = []
+        P_network_seq: List[float] = []
+        P_GPS_seq: List[float] = []
+        P_background_seq: List[float] = []
         t = 0.0
         while t < duration_s:
             usage = self._get_usage_at_time(t, usage_schedule)
             ambient = self._get_ambient_at_time(t, ambient_schedule)
-            # record per-step inputs for CSV output
+            # basic usage fields
             brightness_seq.append(usage.get("brightness", 0.5))
             cpu_load_seq.append(usage.get("cpu_load", 0.5))
             network_seq.append(bool(usage.get("network", True)))
@@ -180,6 +215,12 @@ class BatteryModel:
             powers.append(res["P"])
             currents.append(res["I"])
             q_effs.append(res["Q_eff"])
+            # per-component powers (from last step computation)
+            P_screen_seq.append(res.get("P_screen", 0.0))
+            P_CPU_seq.append(res.get("P_CPU", 0.0))
+            P_network_seq.append(res.get("P_network", 0.0))
+            P_GPS_seq.append(res.get("P_GPS", 0.0))
+            P_background_seq.append(res.get("P_background", 0.0))
             t += dt_s
         return {
             "time_s": times,
@@ -195,6 +236,12 @@ class BatteryModel:
             "gps": gps_seq,
             "background": background_seq,
             "ambient_T": ambient_seq,
+            # per-step component power breakdown (W)
+            "P_screen_W": P_screen_seq,
+            "P_CPU_W": P_CPU_seq,
+            "P_network_W": P_network_seq,
+            "P_GPS_W": P_GPS_seq,
+            "P_background_W": P_background_seq,
         }
 
     def report_summary(self) -> str:
@@ -225,6 +272,11 @@ class BatteryModel:
             "gps",
             "background",
             "ambient_T",
+            "P_screen_W",
+            "P_CPU_W",
+            "P_network_W",
+            "P_GPS_W",
+            "P_background_W",
         ]
         # Ensure directory exists
         os.makedirs(os.path.dirname(filename) or ".", exist_ok=True)
@@ -247,5 +299,10 @@ class BatteryModel:
                     "gps": int(trajectory["gps"][i]),
                     "background": int(trajectory["background"][i]),
                     "ambient_T": trajectory["ambient_T"][i],
+                    "P_screen_W": trajectory["P_screen_W"][i],
+                    "P_CPU_W": trajectory["P_CPU_W"][i],
+                    "P_network_W": trajectory["P_network_W"][i],
+                    "P_GPS_W": trajectory["P_GPS_W"][i],
+                    "P_background_W": trajectory["P_background_W"][i],
                 }
                 writer.writerow(row)
